@@ -102,14 +102,14 @@ class HudRenderer(Widget):
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
-    # Draw the header background
+    # Draw the footer background (gradient at bottom for icon readability)
     rl.draw_rectangle_gradient_v(
       int(rect.x),
-      int(rect.y),
+      int(rect.y + rect.height - UI_CONFIG.header_height),
       int(rect.width),
       UI_CONFIG.header_height,
-      COLORS.HEADER_GRADIENT_START,
       COLORS.HEADER_GRADIENT_END,
+      COLORS.HEADER_GRADIENT_START,
     )
 
     if self.is_cruise_available:
@@ -118,7 +118,7 @@ class HudRenderer(Widget):
     self._draw_current_speed(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
-    button_y = rect.y + UI_CONFIG.border_size
+    button_y = rect.y + rect.height - UI_CONFIG.button_size - UI_CONFIG.border_size
     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
 
   def user_interacting(self) -> bool:
@@ -128,7 +128,7 @@ class HudRenderer(Widget):
     """Draw the MAX speed indicator box."""
     set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
     x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
-    y = rect.y + 45
+    y = rect.y + rect.height - UI_CONFIG.set_speed_height - 45
 
     set_speed_rect = rl.Rectangle(x, y, set_speed_width, UI_CONFIG.set_speed_height)
     rl.draw_rectangle_rounded(set_speed_rect, 0.35, 10, COLORS.BLACK_TRANSLUCENT)

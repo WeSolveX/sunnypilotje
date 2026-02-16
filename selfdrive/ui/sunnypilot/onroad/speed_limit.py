@@ -12,6 +12,7 @@ from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.onroad.hud_renderer import UI_CONFIG
+from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode as SpeedLimitMode
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -119,7 +120,8 @@ class SpeedLimitRenderer(Widget):
   def _render(self, rect: rl.Rectangle):
     width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
     x = rect.x + 60 + width + 30 - 6
-    y = rect.y + 45 - 6
+    bottom_offset = DeveloperUiRenderer.get_bottom_dev_ui_offset()
+    y = rect.y + rect.height - (UI_CONFIG.set_speed_height + 6 * 2) - (45 - 6) - bottom_offset
 
     sign_rect = rl.Rectangle(x, y, width, UI_CONFIG.set_speed_height + 6 * 2)
 
@@ -245,7 +247,7 @@ class SpeedLimitRenderer(Widget):
     if not (valid and source_is_map):
       return
 
-    rect = rl.Rectangle(sign_rect.x + (sign_rect.width - 170) / 2, sign_rect.y + sign_rect.height + 10, 170, 160)
+    rect = rl.Rectangle(sign_rect.x + (sign_rect.width - 170) / 2, sign_rect.y - 160 - 10, 170, 160)
     rl.draw_rectangle_rounded(rect, 0.35, 10, Colors.SUB_BG)
     rl.draw_rectangle_rounded_lines_ex(rect, 0.35, 10, 3, Colors.MUTCD_LINES)
 

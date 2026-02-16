@@ -75,7 +75,8 @@ class HudRendererSP(HudRenderer):
 
     set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
     x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
-    y = rect.y + 45
+    bottom_offset = DeveloperUiRenderer.get_bottom_dev_ui_offset()
+    y = rect.y + rect.height - UI_CONFIG.set_speed_height - 45 - bottom_offset
 
     set_speed_rect = rl.Rectangle(x, y, set_speed_width, UI_CONFIG.set_speed_height)
     rl.draw_rectangle_rounded(set_speed_rect, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
