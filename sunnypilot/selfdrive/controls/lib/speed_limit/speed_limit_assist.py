@@ -214,9 +214,10 @@ class SpeedLimitAssist:
 
   def _update_confirmed_state(self):
     if self._has_speed_limit:
-      if self.v_offset < LIMIT_SPEED_OFFSET_TH:
+      if not self.pcm_op_long and self.v_offset < LIMIT_SPEED_OFFSET_TH:
         self.state = SpeedLimitAssistState.adapting
       else:
+        # PCM long: go directly to active, car handles speed ramp via button presses
         self.state = SpeedLimitAssistState.active
     else:
       self.state = SpeedLimitAssistState.pending
@@ -249,10 +250,9 @@ class SpeedLimitAssist:
           elif self.speed_limit_changed and self.apply_confirm_speed_threshold:
             self.state = SpeedLimitAssistState.preActive
             self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
-          elif self._has_speed_limit and self.v_offset < LIMIT_SPEED_OFFSET_TH:
-            self.state = SpeedLimitAssistState.adapting
+          # PCM long: stay in active, let button controller set speed directly (car handles ramp)
 
-        # ADAPTING
+        # ADAPTING (kept for non-PCM long fallback)
         elif self.state == SpeedLimitAssistState.adapting:
           if self.v_cruise_cluster_changed:
             self.state = SpeedLimitAssistState.inactive
