@@ -13,7 +13,8 @@ from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC, \
+  SPEED_INCREASE_LOOKAHEAD_TIME, MAX_SPEED_INCREASE_LOOKAHEAD
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -123,7 +124,7 @@ class SpeedLimitResolver:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
 
-    gps_fix_age = time.monotonic() - gps_data.unixTimestampMillis * 1e-3
+    gps_fix_age = time.time() - gps_data.unixTimestampMillis * 1e-3
     if gps_fix_age > LIMIT_MAX_MAP_DATA_AGE:
       return
 
@@ -136,18 +137,25 @@ class SpeedLimitResolver:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
 
-    distance_since_fix = self.v_ego * (time.monotonic() - gps_data.unixTimestampMillis * 1e-3)
+    distance_since_fix = self.v_ego * (time.time() - gps_data.unixTimestampMillis * 1e-3)
     distance_to_speed_limit_ahead = max(0., map_data.speedLimitAheadDistance - distance_since_fix)
 
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
-    # FIXME-SP: this is not working as expected
-    if 0. < next_speed_limit < self.v_ego:
+    # Lookahead: detect upcoming lower speed limit and start braking early
+    if 0. < next_speed_limit < speed_limit:
       adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
       adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
 
       if distance_to_speed_limit_ahead <= adapt_distance:
+        self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
+        self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
+
+    # Lookahead: detect upcoming higher speed limit and switch early based on travel time
+    elif 0. < speed_limit < next_speed_limit:
+      lookahead = min(max(50., self.v_ego * SPEED_INCREASE_LOOKAHEAD_TIME), MAX_SPEED_INCREASE_LOOKAHEAD)
+      if distance_to_speed_limit_ahead <= lookahead:
         self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
         self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
 

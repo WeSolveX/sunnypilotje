@@ -84,12 +84,8 @@ class TestSpeedLimitAssist:
   def reset_state(self):
     self.sla.state = SpeedLimitAssistState.disabled
     self.sla.frame = -1
-    self.sla.last_op_engaged_frame = 0
-    self.sla.op_engaged = False
-    self.sla.op_engaged_prev = False
     self.sla._speed_limit = 0.
     self.sla.speed_limit_prev = 0.
-    self.sla.last_valid_speed_limit_offsetted = 0.
     self.sla._distance = 0.
     self.events_sp.clear()
 
@@ -264,7 +260,6 @@ class TestSpeedLimitAssist:
 
     for state in test_states:
       self.sla.state = state
-      self.sla.op_engaged = True
 
       initial_state = state
 
@@ -276,3 +271,43 @@ class TestSpeedLimitAssist:
         assert self.sla.state in [SpeedLimitAssistState.preActive, SpeedLimitAssistState.active]
       elif initial_state in ACTIVE_STATES:
         assert self.sla.state in ACTIVE_STATES
+
+  def test_sla_initiated_cruise_change_stays_active(self):
+    """When cruise speed moves toward SLA target, SLA should stay active (not self-deactivate)."""
+    self.sla.state = SpeedLimitAssistState.active
+    self.sla._has_speed_limit = True
+    # Target is 35 mph, cruise was at 65 mph, now at 35 mph (SLA moved it toward target)
+    self.sla.speed_limit_final_last_conv = round(SPEED_LIMITS['city'] * self.speed_conv)
+    self.sla.prev_v_cruise_cluster_conv = round(SPEED_LIMITS['highway'] * self.speed_conv)
+    self.sla.v_cruise_cluster_conv = round(SPEED_LIMITS['city'] * self.speed_conv)
+    assert not self.sla.v_cruise_cluster_changed_by_user
+
+  def test_user_override_cruise_change_goes_inactive(self):
+    """When cruise speed moves away from SLA target, SLA should detect user override."""
+    self.sla.state = SpeedLimitAssistState.active
+    self.sla._has_speed_limit = True
+    # Target is 35 mph, cruise was at 40 mph, now at 45 mph (user pressed up, moving away)
+    self.sla.speed_limit_final_last_conv = round(SPEED_LIMITS['city'] * self.speed_conv)
+    self.sla.prev_v_cruise_cluster_conv = round(40 * CV.MPH_TO_MS * self.speed_conv)
+    self.sla.v_cruise_cluster_conv = round(45 * CV.MPH_TO_MS * self.speed_conv)
+    assert self.sla.v_cruise_cluster_changed_by_user
+
+  def test_user_change_at_target_goes_inactive(self):
+    """When cruise is already at target and user changes it, SLA should detect user override."""
+    self.sla.state = SpeedLimitAssistState.active
+    self.sla._has_speed_limit = True
+    # Target is 35 mph, cruise was at 35 mph (at target), now at 40 mph (user pressed up)
+    self.sla.speed_limit_final_last_conv = round(SPEED_LIMITS['city'] * self.speed_conv)
+    self.sla.prev_v_cruise_cluster_conv = round(SPEED_LIMITS['city'] * self.speed_conv)
+    self.sla.v_cruise_cluster_conv = round(40 * CV.MPH_TO_MS * self.speed_conv)
+    assert self.sla.v_cruise_cluster_changed_by_user
+
+  def test_user_overshoot_past_target_goes_inactive(self):
+    """When cruise jumps past target (overshoot), SLA should detect user override."""
+    self.sla.state = SpeedLimitAssistState.active
+    self.sla._has_speed_limit = True
+    # Target is 35 mph, cruise was at 38 mph (above), now at 33 mph (below - crossed past target)
+    self.sla.speed_limit_final_last_conv = round(SPEED_LIMITS['city'] * self.speed_conv)
+    self.sla.prev_v_cruise_cluster_conv = round(38 * CV.MPH_TO_MS * self.speed_conv)
+    self.sla.v_cruise_cluster_conv = round(33 * CV.MPH_TO_MS * self.speed_conv)
+    assert self.sla.v_cruise_cluster_changed_by_user

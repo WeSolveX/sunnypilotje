@@ -112,6 +112,35 @@ class SpeedLimitAssist:
     return bool(self.v_cruise_cluster_conv != self.prev_v_cruise_cluster_conv)
 
   @property
+  def v_cruise_cluster_changed_by_user(self) -> bool:
+    """Detect manual cruise speed changes, ignoring SLA-initiated changes.
+
+    When SLA is active and the cruise speed moves toward the SLA target,
+    it is an SLA-initiated change (via v_cruise or ICBM button presses).
+    When at target, any subsequent change is user-initiated.
+    """
+    if not self.v_cruise_cluster_changed:
+      return False
+    # Without a valid speed limit, all changes are user-initiated
+    if not self._has_speed_limit:
+      return True
+    # When already at target, any change is user-initiated
+    if self.prev_v_cruise_cluster_conv == self.speed_limit_final_last_conv:
+      return True
+    # When SLA is active and cruise moves toward target, it's SLA-initiated
+    if self.state in ACTIVE_STATES:
+      old_diff = abs(self.prev_v_cruise_cluster_conv - self.speed_limit_final_last_conv)
+      new_diff = abs(self.v_cruise_cluster_conv - self.speed_limit_final_last_conv)
+      if new_diff < old_diff:
+        # Guard: if cruise crossed past target (overshoot), treat as user override
+        prev_side = self.prev_v_cruise_cluster_conv - self.speed_limit_final_last_conv
+        curr_side = self.v_cruise_cluster_conv - self.speed_limit_final_last_conv
+        if prev_side * curr_side < 0:  # opposite sides of target
+          return True
+        return False
+    return True
+
+  @property
   def target_set_speed_confirmed(self) -> bool:
     return bool(self.v_cruise_cluster_conv == self.target_set_speed_conv)
 
@@ -315,7 +344,7 @@ class SpeedLimitAssist:
       else:
         # ACTIVE
         if self.state == SpeedLimitAssistState.active:
-          if self.v_cruise_cluster_changed:
+          if self.v_cruise_cluster_changed_by_user:
             self.state = SpeedLimitAssistState.inactive
 
           elif self.speed_limit_changed and self.apply_confirm_speed_threshold:
@@ -326,6 +355,9 @@ class SpeedLimitAssist:
         elif self.state == SpeedLimitAssistState.preActive:
           if self._update_non_pcm_long_confirmed_state():
             self.state = SpeedLimitAssistState.active
+          elif not self.apply_confirm_speed_threshold:
+            # Above CST: auto-confirm for instant speed change
+            self.state = SpeedLimitAssistState.active
           elif self.pre_active_timer <= 0:
             # Timeout - session ended
             self.state = SpeedLimitAssistState.inactive
@@ -333,8 +365,12 @@ class SpeedLimitAssist:
         # INACTIVE
         elif self.state == SpeedLimitAssistState.inactive:
           if self.speed_limit_changed:
-            self.state = SpeedLimitAssistState.preActive
-            self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
+            if not self.apply_confirm_speed_threshold:
+              # Above CST: go directly to active for instant speed change
+              self.state = SpeedLimitAssistState.active
+            else:
+              self.state = SpeedLimitAssistState.preActive
+              self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
           elif self._update_non_pcm_long_confirmed_state():
             self.state = SpeedLimitAssistState.active
 
@@ -349,8 +385,12 @@ class SpeedLimitAssist:
           if self._update_non_pcm_long_confirmed_state():
             self.state = SpeedLimitAssistState.active
           elif self._has_speed_limit:
-            self.state = SpeedLimitAssistState.preActive
-            self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
+            if not self.apply_confirm_speed_threshold:
+              # Above CST: go directly to active for instant speed change
+              self.state = SpeedLimitAssistState.active
+            else:
+              self.state = SpeedLimitAssistState.preActive
+              self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
           else:
             self.state = SpeedLimitAssistState.inactive
 

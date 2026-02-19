@@ -14,6 +14,9 @@ PCM_LONG_REQUIRED_MAX_SET_SPEED = {
 }
 
 CONFIRM_SPEED_THRESHOLD = {
-  True: 80,   # km/h
-  False: 50,  # mph
+  True: 30,   # km/h
+  False: 20,  # mph
 }
+
+SPEED_INCREASE_LOOKAHEAD_TIME = 5.0  # seconds before zone to start speed increase
+MAX_SPEED_INCREASE_LOOKAHEAD = 250.  # meters, cap for sensor glitch safety

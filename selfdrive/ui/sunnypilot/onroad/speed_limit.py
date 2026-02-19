@@ -11,6 +11,7 @@ import pyray as rl
 from cereal import custom
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.selfdrive.ui.onroad.hud_renderer import UI_CONFIG
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode as SpeedLimitMode
@@ -44,6 +45,7 @@ class SpeedLimitRenderer(Widget):
   def __init__(self):
     super().__init__()
 
+    self._params = Params()
     self.speed_limit = 0.0
     self.speed_limit_last = 0.0
     self.speed_limit_offset = 0.0
@@ -66,6 +68,10 @@ class SpeedLimitRenderer(Widget):
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
 
+    # SLA toggle state
+    self._sign_rect = rl.Rectangle(0, 0, 0, 0)
+    self._previous_mode: int = int(SpeedLimitMode.information)
+
     self.font_bold = gui_app.font(FontWeight.BOLD)
     self.font_demi = gui_app.font(FontWeight.SEMI_BOLD)
     self.font_norm = gui_app.font(FontWeight.NORMAL)
@@ -78,6 +84,35 @@ class SpeedLimitRenderer(Widget):
   @property
   def speed_conv(self):
     return CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+
+  def _update_state(self) -> None:
+    # Compute sign rect for tap hit-testing (called after set_rect in render())
+    width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
+    x = self._rect.x + 60 + width + 30 - 6
+    y = self._rect.y + 45 - 6
+    self._sign_rect = rl.Rectangle(x, y, width, UI_CONFIG.set_speed_height + 6 * 2)
+
+  @property
+  def _hit_rect(self) -> rl.Rectangle:
+    if ui_state.speed_limit_mode == SpeedLimitMode.off:
+      return rl.Rectangle(0, 0, 0, 0)  # Not tappable when off
+    return self._sign_rect
+
+  def _handle_mouse_release(self, _):
+    super()._handle_mouse_release(_)
+    current_mode = ui_state.speed_limit_mode
+    if current_mode == SpeedLimitMode.off:
+      return
+
+    if current_mode == SpeedLimitMode.assist:
+      new_mode = self._previous_mode
+      if new_mode == int(SpeedLimitMode.assist) or new_mode == int(SpeedLimitMode.off):
+        new_mode = int(SpeedLimitMode.information)
+    else:
+      self._previous_mode = int(current_mode)
+      new_mode = int(SpeedLimitMode.assist)
+
+    self._params.put("SpeedLimitMode", new_mode)
 
   def update(self):
     sm = ui_state.sm
@@ -156,6 +191,37 @@ class SpeedLimitRenderer(Widget):
         self._draw_pre_active_arrow(sign_rect)
       else:
         self._draw_ahead_info(sign_rect)
+      self._draw_sla_badge(sign_rect)
+
+  def _draw_sla_badge(self, sign_rect):
+    """Draw a small 'SLA' badge below the speed limit sign indicating assist state."""
+    is_assist = ui_state.speed_limit_mode == SpeedLimitMode.assist
+    badge_w, badge_h = 80, 36
+    badge_x = sign_rect.x + (sign_rect.width - badge_w) / 2
+
+    # Check if ahead info panel is visible (same conditions as _draw_ahead_info)
+    # to avoid overlapping it
+    source_is_map = self.speed_limit_source == SpeedLimitSource.map
+    ahead_valid = self.speed_limit_ahead_valid and self.speed_limit_ahead > 0 and self.speed_limit_ahead != self.speed_limit
+    ahead_visible = (ahead_valid and source_is_map
+                     and self.speed_limit_assist_state != AssistState.preActive)
+
+    if ahead_visible:
+      # Position below the ahead info panel (170x160, starts at sign_rect.height + 10)
+      badge_y = sign_rect.y + sign_rect.height + 10 + 160 + 4
+    else:
+      badge_y = sign_rect.y + sign_rect.height + 4
+
+    bg_color = rl.Color(0, 180, 80, 200) if is_assist else rl.Color(100, 100, 100, 160)
+    badge_rect = rl.Rectangle(badge_x, badge_y, badge_w, badge_h)
+    rl.draw_rectangle_rounded(badge_rect, 0.5, 8, bg_color)
+
+    text_color = rl.WHITE if is_assist else rl.Color(200, 200, 200, 200)
+    self._draw_text_centered(
+      self.font_demi, "SLA", 28,
+      rl.Vector2(badge_x + badge_w / 2, badge_y + badge_h / 2),
+      text_color,
+    )
 
   def _draw_sign_main(self, rect, alpha=1.0):
     speed_limit_warning_enabled = ui_state.speed_limit_mode >= SpeedLimitMode.warning
