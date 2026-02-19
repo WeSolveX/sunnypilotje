@@ -35,6 +35,9 @@ SPEED_LIMITS = {
   'freeway': 80 * CV.MPH_TO_MS,      # 80 mph
 }
 
+OFFSET_MPH = 5
+OFFSET_MS = OFFSET_MPH * CV.MPH_TO_MS
+
 DEFAULT_CAR = TOYOTA.TOYOTA_RAV4_TSS2
 
 
@@ -311,3 +314,118 @@ class TestSpeedLimitAssist:
     self.sla.prev_v_cruise_cluster_conv = round(38 * CV.MPH_TO_MS * self.speed_conv)
     self.sla.v_cruise_cluster_conv = round(33 * CV.MPH_TO_MS * self.speed_conv)
     assert self.sla.v_cruise_cluster_changed_by_user
+
+  # --- Non-PCM helper and offset tests ---
+
+  def _switch_to_non_pcm(self):
+    """Switch SLA to non-PCM state machine (pcm_op_long=False) for testing."""
+    self.sla.pcm_op_long = False
+    self.sla.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[False] / DT_MDL)
+
+  def test_non_pcm_disabled_to_active_with_offset_above_cst(self):
+    """Non-PCM: SLA auto-confirms and goes directly to active with offset above CST."""
+    self._switch_to_non_pcm()
+    speed_limit = SPEED_LIMITS['city']  # 35 mph
+    speed_limit_final_last = speed_limit + OFFSET_MS  # 40 mph
+    v_cruise = speed_limit  # user cruise at raw speed limit
+
+    for _ in range(int(3. / DT_MDL)):
+      self.sla.update(True, False, speed_limit, 0, v_cruise, speed_limit,
+                      speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state == SpeedLimitAssistState.active
+    assert self.sla.output_v_target == speed_limit_final_last
+
+  def test_non_pcm_offset_cruise_adjust_stays_active(self):
+    """Non-PCM: Full flow - SLA activates with offset, cruise adjusts toward target, SLA stays active."""
+    self._switch_to_non_pcm()
+    speed_limit = SPEED_LIMITS['city']  # 35 mph
+    speed_limit_final_last = speed_limit + OFFSET_MS  # 40 mph
+    v_cruise_at_limit = speed_limit  # user initially at raw limit
+
+    # Phase 1: SLA activates with offset (auto-confirm above CST)
+    for _ in range(int(3. / DT_MDL)):
+      self.sla.update(True, False, speed_limit, 0, v_cruise_at_limit, speed_limit,
+                      speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state == SpeedLimitAssistState.active
+
+    # Phase 2: Cruise adjusts to offset target (SLA-initiated, like VCruiseHelper would do)
+    v_cruise_at_target = speed_limit_final_last  # 40 mph
+    self.sla.update(True, False, speed_limit, 0, v_cruise_at_target, speed_limit,
+                    speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state == SpeedLimitAssistState.active  # stays active
+
+    # Phase 3: Steady state - cruise stable at target
+    self.sla.update(True, False, speed_limit_final_last, 0, v_cruise_at_target, speed_limit,
+                    speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state == SpeedLimitAssistState.active
+
+  def test_non_pcm_offset_user_override_goes_inactive(self):
+    """Non-PCM: User overrides cruise away from offset target -> SLA goes inactive."""
+    self._switch_to_non_pcm()
+    speed_limit = SPEED_LIMITS['city']  # 35 mph
+    speed_limit_final_last = speed_limit + OFFSET_MS  # 40 mph
+
+    # Start active at offset target
+    self.sla.state = SpeedLimitAssistState.active
+    self.sla._has_speed_limit = True
+    self.sla._speed_limit_final_last = speed_limit_final_last
+    self.sla.v_cruise_cluster = speed_limit_final_last
+    self.sla.v_cruise_cluster_prev = speed_limit_final_last
+    self.sla.prev_v_cruise_cluster_conv = round(speed_limit_final_last * self.speed_conv)
+    self.sla.speed_limit_final_last_conv = round(speed_limit_final_last * self.speed_conv)
+
+    # User presses cruise up: 40 -> 45 mph (away from target)
+    user_override_cruise = 45 * CV.MPH_TO_MS
+    self.sla.update(True, False, speed_limit_final_last, 0, user_override_cruise, speed_limit,
+                    speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state == SpeedLimitAssistState.inactive
+
+  def test_non_pcm_offset_speed_limit_change_while_active(self):
+    """Non-PCM: Speed limit changes while SLA active with offset -> re-evaluates correctly."""
+    self._switch_to_non_pcm()
+    speed_limit_old = SPEED_LIMITS['city']  # 35 mph
+    speed_limit_new = SPEED_LIMITS['highway']  # 65 mph
+    speed_limit_final_last_new = speed_limit_new + OFFSET_MS  # 70 mph
+
+    # Start active at old speed limit with offset
+    self.sla.state = SpeedLimitAssistState.active
+    self.sla._has_speed_limit = True
+    self.sla._speed_limit = speed_limit_old
+    self.sla.speed_limit_prev = speed_limit_old
+    self.sla._speed_limit_final_last = speed_limit_old + OFFSET_MS
+    self.sla.v_cruise_cluster = speed_limit_old + OFFSET_MS
+    self.sla.v_cruise_cluster_prev = speed_limit_old + OFFSET_MS
+    self.sla.prev_v_cruise_cluster_conv = round((speed_limit_old + OFFSET_MS) * self.speed_conv)
+    self.sla.speed_limit_final_last_conv = round((speed_limit_old + OFFSET_MS) * self.speed_conv)
+
+    # Speed limit changes to highway + offset
+    self.sla.update(True, False, speed_limit_old + OFFSET_MS, 0, speed_limit_old + OFFSET_MS,
+                    speed_limit_new, speed_limit_final_last_new, True, 0, self.events_sp)
+    # Should stay in an active or pre-active state (not disabled/inactive with no exit)
+    assert self.sla.state in (SpeedLimitAssistState.active, SpeedLimitAssistState.preActive)
+
+  def test_pcm_offset_v_target_includes_offset(self):
+    """PCM: output_v_target includes offset when SLA is active."""
+    speed_limit = SPEED_LIMITS['highway']  # 65 mph
+    speed_limit_final_last = speed_limit + OFFSET_MS  # 70 mph
+
+    # Confirm with PCM max set speed
+    self.sla.state = SpeedLimitAssistState.preActive
+    self.sla.update(True, False, speed_limit, 0, self.pcm_long_max_set_speed, speed_limit,
+                    speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state == SpeedLimitAssistState.active
+    assert self.sla.output_v_target == speed_limit_final_last
+
+  def test_pcm_offset_stays_active_stable_cluster(self):
+    """PCM: SLA stays active with offset when ECU cruise speed doesn't change."""
+    speed_limit = SPEED_LIMITS['highway']  # 65 mph
+    speed_limit_final_last = speed_limit + OFFSET_MS  # 70 mph
+
+    self.initialize_active_state(self.pcm_long_max_set_speed)
+
+    # Multiple frames with stable ECU cruise - SLA should stay active
+    for _ in range(int(3. / DT_MDL)):
+      self.sla.update(True, False, speed_limit, 0, self.pcm_long_max_set_speed, speed_limit,
+                      speed_limit_final_last, True, 0, self.events_sp)
+    assert self.sla.state in ACTIVE_STATES
+    assert self.sla.output_v_target == speed_limit_final_last
