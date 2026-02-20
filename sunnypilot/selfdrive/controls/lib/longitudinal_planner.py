@@ -66,7 +66,6 @@ class LongitudinalPlannerSP:
       LongitudinalPlanSource.cruise: (v_cruise, a_ego),
       LongitudinalPlanSource.sccVision: (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       LongitudinalPlanSource.sccMap: (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      LongitudinalPlanSource.sccAdvisory: (self.scc.advisory.output_v_target, self.scc.advisory.output_a_target),
       LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
     }
 
@@ -114,14 +113,6 @@ class LongitudinalPlannerSP:
     sccMap.aTarget = float(self.scc.map.output_a_target)
     sccMap.enabled = self.scc.map.is_enabled
     sccMap.active = self.scc.map.is_active
-    # Advisory Control
-    sccAdvisory = smartCruiseControl.advisory
-    sccAdvisory.state = self.scc.advisory.state
-    sccAdvisory.vTarget = float(self.scc.advisory.output_v_target)
-    sccAdvisory.aTarget = float(self.scc.advisory.output_a_target)
-    sccAdvisory.enabled = self.scc.advisory.is_enabled
-    sccAdvisory.active = self.scc.advisory.is_active
-
     # Speed Limit
     speedLimit = longitudinalPlanSP.speedLimit
     resolver = speedLimit.resolver

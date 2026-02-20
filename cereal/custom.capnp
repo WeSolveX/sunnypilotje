@@ -208,7 +208,6 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   struct SmartCruiseControl {
     vision @0 :Vision;
     map @1 :Map;
-    advisory @2 :Advisory;
 
     struct Vision {
       state @0 :VisionState;
@@ -222,14 +221,6 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
 
     struct Map {
       state @0 :MapState;
-      vTarget @1 :Float32;
-      aTarget @2 :Float32;
-      enabled @3 :Bool;
-      active @4 :Bool;
-    }
-
-    struct Advisory {
-      state @0 :AdvisoryState;
       vTarget @1 :Float32;
       aTarget @2 :Float32;
       enabled @3 :Bool;
@@ -252,12 +243,6 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       overriding @3; # System overriding with manual control.
     }
 
-    enum AdvisoryState {
-      disabled @0; # System disabled or inactive.
-      enabled @1; # No advisory speed limit active.
-      active @2; # Advisory speed limit is being applied.
-      overriding @3; # System overriding with manual control.
-    }
   }
 
   struct SpeedLimit {
@@ -305,7 +290,6 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     sccVision @1;
     sccMap @2;
     speedLimitAssist @3;
-    sccAdvisory @4;
   }
 
   struct E2eAlerts {
@@ -460,8 +444,6 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
   speedLimitAhead @3 :Float32;
   speedLimitAheadDistance @4 :Float32;
   roadName @5 :Text;
-  advisorySpeedLimitValid @6 :Bool;
-  advisorySpeedLimit @7 :Float32;
 }
 
 struct ModelDataV2SP @0xa1680744031fdb2d {

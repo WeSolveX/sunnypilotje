@@ -154,6 +154,14 @@ class OsmMapData(BaseMapData):
     return str(self.mem_params.get("RoadName") or "")
 
   def get_next_speed_limit_and_distance(self) -> tuple[float, float]:
+    # Roundabout advisory: report approaching roundabout as "speed limit ahead"
+    # This feeds into SpeedLimitResolver's existing lookahead braking logic
+    if self._roundabout_detector.is_roundabout:
+      dist = self._roundabout_detector.distance_to_roundabout
+      if dist > 0:
+        return ROUNDABOUT_TARGET_SPEED, dist
+
+    # Normal next speed limit from map data
     next_speed_limit_section_str = self.mem_params.get("NextMapSpeedLimit")
     next_speed_limit_section = next_speed_limit_section_str if next_speed_limit_section_str else {}
     next_speed_limit = next_speed_limit_section.get('speedlimit', 0.0)
@@ -166,26 +174,3 @@ class OsmMapData(BaseMapData):
       next_speed_limit_distance = (self.last_position or Coordinate(0, 0)).distance_to(next_speed_limit_coordinates)
 
     return next_speed_limit, next_speed_limit_distance
-
-  def get_advisory_speed_limit(self) -> float:
-    # Check explicit advisory speed from OSM tags first
-    advisory = float(self.mem_params.get("MapAdvisorySpeedLimit") or 0.0)
-    if advisory > 0:
-      return advisory
-
-    # Fallback: check if approaching roundabout within braking distance
-    if self._roundabout_detector.is_roundabout:
-      dist = self._roundabout_detector.distance_to_roundabout
-      if dist > 0:
-        # Get vehicle speed from liveLocationKalman velocity
-        location = self.sm['liveLocationKalman']
-        if location.velocityCalibrated.valid:
-          v = location.velocityCalibrated.value
-          v_ego = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
-          # SUVAT: brake_dist = (v_ego² - v_target²) / (2 * |decel|)
-          if v_ego > ROUNDABOUT_TARGET_SPEED:
-            brake_dist = (v_ego ** 2 - ROUNDABOUT_TARGET_SPEED ** 2) / (2 * abs(ROUNDABOUT_DECEL))
-            if dist <= brake_dist + ROUNDABOUT_BUFFER:
-              return ROUNDABOUT_TARGET_SPEED
-
-    return 0.0
