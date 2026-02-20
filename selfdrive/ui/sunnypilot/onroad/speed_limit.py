@@ -94,20 +94,15 @@ class SpeedLimitRenderer(Widget):
 
   @property
   def _hit_rect(self) -> rl.Rectangle:
-    if ui_state.speed_limit_mode == SpeedLimitMode.off:
-      return rl.Rectangle(0, 0, 0, 0)  # Not tappable when off
     return self._sign_rect
 
   def _handle_mouse_release(self, _):
     super()._handle_mouse_release(_)
     current_mode = ui_state.speed_limit_mode
     if current_mode == SpeedLimitMode.off:
-      return
-
-    if current_mode == SpeedLimitMode.assist:
-      new_mode = self._previous_mode
-      if new_mode == int(SpeedLimitMode.assist) or new_mode == int(SpeedLimitMode.off):
-        new_mode = int(SpeedLimitMode.information)
+      new_mode = int(SpeedLimitMode.assist)
+    elif current_mode == SpeedLimitMode.assist:
+      new_mode = int(SpeedLimitMode.off)
     else:
       self._previous_mode = int(current_mode)
       new_mode = int(SpeedLimitMode.assist)
@@ -185,13 +180,15 @@ class SpeedLimitRenderer(Widget):
       self.assist_frame = 0
       alpha = self._sign_alpha_filter.update(1.0)
 
-    if ui_state.speed_limit_mode != SpeedLimitMode.off:
+    if ui_state.speed_limit_mode == SpeedLimitMode.off:
+      self._draw_sign_main(sign_rect, alpha=0.3)
+    else:
       self._draw_sign_main(sign_rect, alpha)
       if self.speed_limit_assist_state == AssistState.preActive:
         self._draw_pre_active_arrow(sign_rect)
       else:
         self._draw_ahead_info(sign_rect)
-      self._draw_sla_badge(sign_rect)
+    self._draw_sla_badge(sign_rect)
 
   def _draw_sla_badge(self, sign_rect):
     """Draw a small 'SLA' badge below the speed limit sign indicating assist state."""
