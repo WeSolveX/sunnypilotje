@@ -260,6 +260,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"SmartCruiseControlAdvisory", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "0"}},
 

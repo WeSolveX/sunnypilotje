@@ -59,3 +59,6 @@ class OsmMapData(BaseMapData):
       next_speed_limit_distance = (self.last_position or Coordinate(0, 0)).distance_to(next_speed_limit_coordinates)
 
     return next_speed_limit, next_speed_limit_distance
+
+  def get_advisory_speed_limit(self) -> float:
+    return float(self.mem_params.get("MapAdvisorySpeedLimit") or 0.0)
