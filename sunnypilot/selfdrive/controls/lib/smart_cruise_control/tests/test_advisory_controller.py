@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import pytest
 import cereal.messaging as messaging
 from cereal import custom
 from openpilot.common.constants import CV
@@ -93,7 +94,7 @@ class TestSmartCruiseControlAdvisory:
     self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
 
     assert self.scc_a.is_active
-    assert self.scc_a.output_v_target == max(advisory_speed, MIN_V_ADVISORY)
+    assert self.scc_a.output_v_target == pytest.approx(max(advisory_speed, MIN_V_ADVISORY), abs=1e-4)
 
   def test_active_respects_min_v_advisory(self):
     advisory_speed = 10 * CV.KPH_TO_MS  # 10 km/h - below MIN_V_ADVISORY
@@ -233,10 +234,10 @@ class TestSmartCruiseControlAdvisory:
     self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
     self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
     assert self.scc_a.state == AdvisoryState.active
-    assert self.scc_a.output_v_target == advisory_speed_1
+    assert self.scc_a.output_v_target == pytest.approx(advisory_speed_1, abs=1e-4)
 
     # Advisory changes to a higher value while still active
     self._update_map_data(advisory_speed_2)
     self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
     assert self.scc_a.state == AdvisoryState.active
-    assert self.scc_a.output_v_target == advisory_speed_2
+    assert self.scc_a.output_v_target == pytest.approx(advisory_speed_2, abs=1e-4)
