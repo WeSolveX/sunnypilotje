@@ -17,10 +17,11 @@ from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.advisory_c
 AdvisoryState = custom.LongitudinalPlanSP.SmartCruiseControl.AdvisoryState
 
 
-def generate_liveMapDataSP(advisory_speed_limit: float = 0., advisory_valid: bool = False):
+def generate_liveMapDataSP(advisory_speed_limit: float = 0., advisory_valid: bool = False, is_roundabout: bool = False):
   msg = messaging.new_message('liveMapDataSP')
   msg.liveMapDataSP.advisorySpeedLimitValid = advisory_valid
   msg.liveMapDataSP.advisorySpeedLimit = advisory_speed_limit
+  msg.liveMapDataSP.isRoundabout = is_roundabout
   return msg
 
 
@@ -37,8 +38,8 @@ class TestSmartCruiseControlAdvisory:
   def reset_params(self):
     self.params.put_bool("SmartCruiseControlAdvisory", True)
 
-  def _update_map_data(self, advisory_speed: float, advisory_valid: bool = True):
-    msg = generate_liveMapDataSP(advisory_speed, advisory_valid)
+  def _update_map_data(self, advisory_speed: float, advisory_valid: bool = True, is_roundabout: bool = False):
+    msg = generate_liveMapDataSP(advisory_speed, advisory_valid, is_roundabout)
     self.sm['liveMapDataSP'] = msg.liveMapDataSP
 
   def test_initial_state(self):
@@ -241,3 +242,83 @@ class TestSmartCruiseControlAdvisory:
     self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
     assert self.scc_a.state == AdvisoryState.active
     assert self.scc_a.output_v_target == pytest.approx(advisory_speed_2, abs=1e-4)
+
+  # --- Roundabout fallback tests ---
+
+  def test_roundabout_fallback_when_no_advisory(self):
+    """In a roundabout with no advisory speed, should fall back to MIN_V_ADVISORY (30 km/h)."""
+    v_cruise = 50 * CV.KPH_TO_MS
+    v_ego = 45 * CV.KPH_TO_MS
+
+    # No advisory speed, but in a roundabout
+    self._update_map_data(0., advisory_valid=False, is_roundabout=True)
+
+    # disabled -> enabled -> active (roundabout fallback triggers advisory_speed_limit_valid=True)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+
+    assert self.scc_a.state == AdvisoryState.active
+    assert self.scc_a.is_active
+    assert self.scc_a.output_v_target == pytest.approx(MIN_V_ADVISORY, abs=1e-4)
+
+  def test_roundabout_advisory_takes_precedence_over_fallback(self):
+    """If both advisory speed AND roundabout, use the actual advisory speed."""
+    advisory_speed = 25 * CV.KPH_TO_MS  # 25 km/h explicit advisory
+    v_cruise = 50 * CV.KPH_TO_MS
+    v_ego = 45 * CV.KPH_TO_MS
+
+    self._update_map_data(advisory_speed, advisory_valid=True, is_roundabout=True)
+
+    # disabled -> enabled -> active
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+
+    assert self.scc_a.is_active
+    # Should use the explicit advisory speed (clamped to MIN_V_ADVISORY since 25 < 30)
+    assert self.scc_a.output_v_target == pytest.approx(MIN_V_ADVISORY, abs=1e-4)
+
+  def test_no_roundabout_no_advisory_stays_enabled(self):
+    """Without roundabout and without advisory, should NOT become active."""
+    v_cruise = 50 * CV.KPH_TO_MS
+    v_ego = 45 * CV.KPH_TO_MS
+
+    # No advisory, no roundabout
+    self._update_map_data(0., advisory_valid=False, is_roundabout=False)
+
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+
+    assert self.scc_a.state == AdvisoryState.enabled
+    assert not self.scc_a.is_active
+    assert self.scc_a.output_v_target == V_CRUISE_UNSET
+
+  def test_roundabout_deactivates_when_leaving(self):
+    """When leaving roundabout, should transition back to enabled."""
+    v_cruise = 50 * CV.KPH_TO_MS
+    v_ego = 35 * CV.KPH_TO_MS
+
+    # Enter roundabout (no advisory)
+    self._update_map_data(0., advisory_valid=False, is_roundabout=True)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    assert self.scc_a.state == AdvisoryState.active
+
+    # Leave roundabout
+    self._update_map_data(0., advisory_valid=False, is_roundabout=False)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    assert self.scc_a.state == AdvisoryState.enabled
+    assert not self.scc_a.is_active
+
+  def test_roundabout_not_active_when_cruise_below_fallback(self):
+    """If cruise is already at/below 30 km/h, roundabout fallback should not activate."""
+    v_cruise = 25 * CV.KPH_TO_MS  # below MIN_V_ADVISORY
+    v_ego = 20 * CV.KPH_TO_MS
+
+    self._update_map_data(0., advisory_valid=False, is_roundabout=True)
+
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+    self.scc_a.update(self.sm, True, False, v_ego, 0., v_cruise)
+
+    # v_cruise <= MIN_V_ADVISORY, so should stay enabled (no need to slow down further)
+    assert self.scc_a.state == AdvisoryState.enabled
+    assert not self.scc_a.is_active

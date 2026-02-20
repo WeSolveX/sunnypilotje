@@ -23,6 +23,9 @@ class SmartCruiseControlAdvisory:
 
   Reads advisory speed limits from liveMapDataSP (sourced from mapd's MapAdvisorySpeedLimit param)
   and applies them as a target speed when the advisory speed is lower than the current cruise speed.
+
+  When no advisory speed exists but the car is in a roundabout (detected via OSM junction=roundabout),
+  falls back to MIN_V_ADVISORY (30 km/h) as the target speed.
   """
   v_target: float = 0.
   a_target: float = 0.
@@ -43,6 +46,7 @@ class SmartCruiseControlAdvisory:
     self.v_cruise = 0.
     self.advisory_speed_limit = 0.
     self.advisory_speed_limit_valid = False
+    self.is_roundabout = False
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
@@ -58,12 +62,20 @@ class SmartCruiseControlAdvisory:
 
   def update_calculations(self, sm: messaging.SubMaster) -> None:
     map_data = sm['liveMapDataSP']
+    self.is_roundabout = map_data.isRoundabout
     self.advisory_speed_limit_valid = map_data.advisorySpeedLimitValid
     # When advisory becomes invalid, speed resets to 0 immediately. The state machine
     # transitions active -> enabled on the same frame, so output_v_target returns to
     # V_CRUISE_UNSET within one cycle. This is safe because the longitudinal planner
     # picks min(targets) and V_CRUISE_UNSET is the highest possible value.
-    self.advisory_speed_limit = map_data.advisorySpeedLimit if self.advisory_speed_limit_valid else 0.
+    if self.advisory_speed_limit_valid:
+      self.advisory_speed_limit = map_data.advisorySpeedLimit
+    elif self.is_roundabout:
+      # No advisory speed tag in OSM, but we're in a roundabout - use 30 km/h fallback
+      self.advisory_speed_limit = MIN_V_ADVISORY
+      self.advisory_speed_limit_valid = True
+    else:
+      self.advisory_speed_limit = 0.
     self.v_target = self.advisory_speed_limit
 
   def _update_state_machine(self) -> tuple[bool, bool]:
