@@ -8,7 +8,6 @@ import pytest
 import cereal.messaging as messaging
 from cereal import custom
 from openpilot.common.constants import CV
-from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V_ADVISORY
@@ -32,15 +31,10 @@ def generate_liveMapDataSP(advisory_speed_limit: float = 0., advisory_valid: boo
 class TestSmartCruiseControlAdvisory:
 
   def setup_method(self):
-    self.params = Params()
-    self.reset_params()
     self.scc_a = SmartCruiseControlAdvisory()
 
     map_data = generate_liveMapDataSP()
     self.sm = {'liveMapDataSP': map_data.liveMapDataSP}
-
-  def reset_params(self):
-    self.params.put_bool("SmartCruiseControlAdvisory", True)
 
   def _update_map_data(self, advisory_speed: float, advisory_valid: bool = True,
                        is_roundabout: bool = False, roundabout_distance: float = 0.):
@@ -54,8 +48,7 @@ class TestSmartCruiseControlAdvisory:
     assert self.scc_a.output_a_target == 0.
 
   def test_system_disabled(self):
-    self.params.put_bool("SmartCruiseControlAdvisory", False)
-    self.scc_a.enabled = self.params.get_bool("SmartCruiseControlAdvisory")
+    self.scc_a.enabled = False  # Simulate toggle off
 
     for _ in range(int(10. / DT_MDL)):
       self.scc_a.update(self.sm, True, False, 0., 0., 0.)

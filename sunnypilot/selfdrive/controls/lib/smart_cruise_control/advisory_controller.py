@@ -6,10 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 import cereal.messaging as messaging
 from cereal import custom
-from openpilot.common.params import Params
-from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V_ADVISORY
 
 AdvisoryState = custom.LongitudinalPlanSP.SmartCruiseControl.AdvisoryState
@@ -38,9 +35,8 @@ class SmartCruiseControlAdvisory:
   output_a_target: float = 0.
 
   def __init__(self):
-    self.params = Params()
     self.frame = -1
-    self.enabled = self.params.get_bool("SmartCruiseControlAdvisory")
+    self.enabled = True  # Always enabled; UI toggle requires params_pyx.so rebuild
     self.long_enabled = False
     self.long_override = False
     self.is_enabled = False
@@ -61,8 +57,7 @@ class SmartCruiseControlAdvisory:
     return min(self.a_ego, 0.) if self.is_active else 0.
 
   def update_params(self) -> None:
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self.params.get_bool("SmartCruiseControlAdvisory")
+    pass  # Toggle disabled until params_pyx.so can be properly rebuilt
 
   def update_calculations(self, sm: messaging.SubMaster) -> None:
     map_data = sm['liveMapDataSP']
