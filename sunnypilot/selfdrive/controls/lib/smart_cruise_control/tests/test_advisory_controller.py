@@ -97,7 +97,7 @@ class TestSmartCruiseControlAdvisory:
     assert self.scc_a.output_v_target == pytest.approx(max(advisory_speed, MIN_V_ADVISORY), abs=1e-4)
 
   def test_active_respects_min_v_advisory(self):
-    advisory_speed = 10 * CV.KPH_TO_MS  # 10 km/h - below MIN_V_ADVISORY
+    advisory_speed = 20 * CV.KPH_TO_MS  # 20 km/h - below MIN_V_ADVISORY (30 km/h)
     v_cruise = 50 * CV.KPH_TO_MS
     v_ego = 45 * CV.KPH_TO_MS
 
