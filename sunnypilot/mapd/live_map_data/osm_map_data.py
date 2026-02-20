@@ -29,6 +29,10 @@ ROUNDABOUT_POSITION_THRESHOLD = 15.0  # meters - only re-query if moved this far
 ROUNDABOUT_DECEL = -1.2  # m/s² - comfortable but firm deceleration
 ROUNDABOUT_BUFFER = 50.0  # meters - arrive at target speed this far before the roundabout
 ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
+# Virtual speed limit for roads without a mapped limit - needed because
+# SpeedLimitResolver's lookahead condition requires: 0 < next_speed < current_speed.
+# Without this, roundabout braking never activates on unmapped roads.
+ROUNDABOUT_FALLBACK_SPEED_LIMIT = 130 * CV.KPH_TO_MS  # 130 km/h (max Danish motorway speed)
 
 
 def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -163,6 +167,7 @@ class OsmMapData(BaseMapData):
     super().__init__()
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self._roundabout_detector = RoundaboutDetector()
+    self._roundabout_enabled = self.params.get_bool("SmartCruiseControlMap")
 
   def update_location(self) -> None:
     location = self.sm['liveLocationKalman']
@@ -185,11 +190,22 @@ class OsmMapData(BaseMapData):
 
     self.mem_params.put("LastGPSPosition", json.dumps(params))
 
-    # Feed position and bearing to roundabout detector
-    self._roundabout_detector.update(self.last_position.latitude, self.last_position.longitude, self.last_bearing or 0.0)
+    # Refresh roundabout toggle (uses existing SmartCruiseControlMap param - no new keys needed)
+    self._roundabout_enabled = self.params.get_bool("SmartCruiseControlMap")
+
+    # Feed position and bearing to roundabout detector (only when enabled)
+    if self._roundabout_enabled:
+      self._roundabout_detector.update(self.last_position.latitude, self.last_position.longitude, self.last_bearing or 0.0)
 
   def get_current_speed_limit(self) -> float:
-    return float(self.mem_params.get("MapSpeedLimit") or 0.0)
+    speed_limit = float(self.mem_params.get("MapSpeedLimit") or 0.0)
+    # When approaching a roundabout with no mapped speed limit, set a virtual limit.
+    # SpeedLimitResolver requires: 0 < next_speed_limit < speed_limit
+    # Without this, the condition fails when speed_limit=0 and braking never activates.
+    if speed_limit == 0.0 and self._roundabout_enabled and self._roundabout_detector.is_roundabout:
+      if self._roundabout_detector.distance_to_roundabout > 0:
+        speed_limit = ROUNDABOUT_FALLBACK_SPEED_LIMIT
+    return speed_limit
 
   def get_current_road_name(self) -> str:
     return str(self.mem_params.get("RoadName") or "")
@@ -197,7 +213,8 @@ class OsmMapData(BaseMapData):
   def get_next_speed_limit_and_distance(self) -> tuple[float, float]:
     # Roundabout advisory: report approaching roundabout as "speed limit ahead"
     # This feeds into SpeedLimitResolver's existing lookahead braking logic
-    if self._roundabout_detector.is_roundabout:
+    # Gated behind SmartCruiseControlMap toggle (existing param, no rebuild needed)
+    if self._roundabout_enabled and self._roundabout_detector.is_roundabout:
       dist = self._roundabout_detector.distance_to_roundabout
       if dist > 0:
         return ROUNDABOUT_TARGET_SPEED, dist
