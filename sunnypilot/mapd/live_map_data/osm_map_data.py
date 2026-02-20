@@ -20,26 +20,44 @@ from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-ROUNDABOUT_QUERY_RADIUS = 60  # meters
+ROUNDABOUT_QUERY_RADIUS = 350  # meters - large enough for braking lookahead at highway speeds
 ROUNDABOUT_QUERY_INTERVAL = 5.0  # seconds between queries
 ROUNDABOUT_POSITION_THRESHOLD = 30.0  # meters - only re-query if moved this far
 
 
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+  """Calculate distance in meters between two lat/lon points using haversine formula."""
+  R = 6371000.0  # Earth radius in meters
+  dlat = math.radians(lat2 - lat1)
+  dlon = math.radians(lon2 - lon1)
+  a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+  return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
 class RoundaboutDetector:
-  """Detects roundabouts using Overpass API queries in a background thread."""
+  """Detects roundabouts using Overpass API queries in a background thread.
+
+  Returns both a boolean (is_roundabout) and the distance in meters to
+  the nearest roundabout geometry point (distance_to_roundabout).
+  """
 
   def __init__(self):
     self._is_roundabout = False
+    self._distance_to_roundabout = 0.0
     self._last_query_lat = 0.0
     self._last_query_lon = 0.0
     self._last_query_time = 0.0
     self._lock = threading.Lock()
-    self._running = True
 
   @property
   def is_roundabout(self) -> bool:
     with self._lock:
       return self._is_roundabout
+
+  @property
+  def distance_to_roundabout(self) -> float:
+    with self._lock:
+      return self._distance_to_roundabout
 
   def update(self, lat: float, lon: float) -> None:
     """Called from main thread at 1Hz. Triggers background query if needed."""
@@ -64,17 +82,27 @@ class RoundaboutDetector:
     thread.start()
 
   def _query_overpass(self, lat: float, lon: float) -> None:
-    """Background thread: query Overpass API for nearby roundabouts."""
-    query = f'[out:json][timeout:3];way(around:{ROUNDABOUT_QUERY_RADIUS},{lat},{lon})[junction=roundabout];out ids;'
+    """Background thread: query Overpass API for nearby roundabouts with geometry."""
+    query = f'[out:json][timeout:3];way(around:{ROUNDABOUT_QUERY_RADIUS},{lat},{lon})[junction=roundabout];out geom;'
     try:
       data = urllib.parse.urlencode({'data': query}).encode('utf-8')
       req = urllib.request.Request(OVERPASS_URL, data=data, method='POST')
       with urllib.request.urlopen(req, timeout=3) as resp:
         result = json.loads(resp.read().decode('utf-8'))
-        found = len(result.get('elements', [])) > 0
+        elements = result.get('elements', [])
+        found = len(elements) > 0
+
+        min_dist = float('inf')
+        if found:
+          for element in elements:
+            for node in element.get('geometry', []):
+              d = _haversine_distance(lat, lon, node['lat'], node['lon'])
+              if d < min_dist:
+                min_dist = d
 
       with self._lock:
         self._is_roundabout = found
+        self._distance_to_roundabout = min_dist if found else 0.0
         self._last_query_lat = lat
         self._last_query_lon = lon
 
@@ -138,3 +166,6 @@ class OsmMapData(BaseMapData):
 
   def get_is_roundabout(self) -> bool:
     return self._roundabout_detector.is_roundabout
+
+  def get_roundabout_distance(self) -> float:
+    return self._roundabout_detector.distance_to_roundabout

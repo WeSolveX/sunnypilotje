@@ -50,6 +50,10 @@ class BaseMapData(ABC):
   def get_is_roundabout(self) -> bool:
     pass
 
+  @abstractmethod
+  def get_roundabout_distance(self) -> float:
+    pass
+
   def publish(self) -> None:
     speed_limit = self.get_current_speed_limit()
     next_speed_limit, next_speed_limit_distance = self.get_next_speed_limit_and_distance()
@@ -68,6 +72,7 @@ class BaseMapData(ABC):
     live_map_data.advisorySpeedLimitValid = bool(MAX_SPEED_LIMIT > advisory_speed_limit > 0)
     live_map_data.advisorySpeedLimit = advisory_speed_limit
     live_map_data.isRoundabout = self.get_is_roundabout()
+    live_map_data.roundaboutDistance = self.get_roundabout_distance()
 
     self.pm.send('liveMapDataSP', mapd_sp_send)
 
