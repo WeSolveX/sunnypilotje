@@ -14,7 +14,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC, \
-  SPEED_INCREASE_LOOKAHEAD_TIME, MAX_SPEED_INCREASE_LOOKAHEAD
+  SPEED_INCREASE_LOOKAHEAD_TIME, MAX_SPEED_INCREASE_LOOKAHEAD, SUDDEN_LIMIT_DEBOUNCE_TIME
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -74,6 +74,12 @@ class SpeedLimitResolver:
     self.speed_limit_final = 0.
     self.speed_limit_final_last = 0.
     self.speed_limit_offset = 0.
+
+    # Sudden speed limit debounce state
+    self._last_ahead_limit = 0.         # Last speedLimitAhead value seen (cleared when ahead=0)
+    self._pending_sudden_limit = 0.     # Sudden limit awaiting confirmation
+    self._pending_sudden_ts = 0.        # Timestamp when sudden limit first appeared
+    self._accepted_map_limit = 0.       # Last accepted (post-debounce) map speed limit
 
   def update_speed_limit_states(self) -> None:
     self.speed_limit_final = self.speed_limit + self.speed_limit_offset
@@ -136,6 +142,53 @@ class SpeedLimitResolver:
   def _calculate_map_data_limits(self, sm: messaging.SubMaster, speed_limit: float, next_speed_limit: float) -> None:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
+
+    # --- DEBOUNCE PHASE: filter sudden (not seen ahead) speed limits ---
+    # Match check runs BEFORE updating _last_ahead_limit, so a limit that was
+    # seen ahead on previous frames is still available for matching even when
+    # next_speed_limit drops to 0 on the same frame the current limit changes.
+
+    # Detect if the raw speed_limit changed from what we last accepted
+    if speed_limit != self._accepted_map_limit and speed_limit > 0.:
+      if speed_limit == self._last_ahead_limit:
+        # Was seen ahead -> trust immediately, consume the token
+        self._accepted_map_limit = speed_limit
+        self._last_ahead_limit = 0.
+        self._pending_sudden_limit = 0.
+        self._pending_sudden_ts = 0.
+      else:
+        # Sudden/unexpected -> start or continue debounce
+        if self._pending_sudden_limit != speed_limit:
+          # New pending value -> reset timer
+          self._pending_sudden_limit = speed_limit
+          self._pending_sudden_ts = time.monotonic()
+
+        elapsed = time.monotonic() - self._pending_sudden_ts
+        if elapsed >= SUDDEN_LIMIT_DEBOUNCE_TIME:
+          # Persisted for 3 seconds -> accept it
+          self._accepted_map_limit = speed_limit
+          self._pending_sudden_limit = 0.
+          self._pending_sudden_ts = 0.
+        else:
+          # Still debouncing -> substitute previous accepted limit
+          speed_limit = self._accepted_map_limit
+
+    elif speed_limit == 0.:
+      # Limit disappeared -> clear pending state (transient was ignored)
+      self._pending_sudden_limit = 0.
+      self._pending_sudden_ts = 0.
+    else:
+      # No change -> clear any pending debounce (limit is stable)
+      self._pending_sudden_limit = 0.
+      self._pending_sudden_ts = 0.
+
+    # Track what we've seen ahead (after debounce check to preserve token for matching)
+    if next_speed_limit > 0.:
+      self._last_ahead_limit = next_speed_limit
+    else:
+      self._last_ahead_limit = 0.  # Clear stale value
+
+    # --- EXISTING LOOKAHEAD LOGIC (operates on debounced speed_limit) ---
 
     distance_since_fix = self.v_ego * (time.time() - gps_data.unixTimestampMillis * 1e-3)
     distance_to_speed_limit_ahead = max(0., map_data.speedLimitAheadDistance - distance_since_fix)
