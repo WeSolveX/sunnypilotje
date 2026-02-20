@@ -21,9 +21,9 @@ from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-ROUNDABOUT_QUERY_RADIUS = 350  # meters - large enough for braking lookahead at highway speeds
-ROUNDABOUT_QUERY_INTERVAL = 5.0  # seconds between queries
-ROUNDABOUT_POSITION_THRESHOLD = 30.0  # meters - only re-query if moved this far
+ROUNDABOUT_QUERY_RADIUS = 500  # meters - large enough for braking lookahead at highway speeds
+ROUNDABOUT_QUERY_INTERVAL = 3.0  # seconds between queries
+ROUNDABOUT_POSITION_THRESHOLD = 15.0  # meters - only re-query if moved this far
 
 # Roundabout braking constants (SUVAT kinematics)
 ROUNDABOUT_DECEL = -1.2  # m/s² - comfortable but firm deceleration
@@ -40,16 +40,34 @@ def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> f
   return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-class RoundaboutDetector:
-  """Detects roundabouts using Overpass API queries in a background thread.
+def _bearing_to(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+  """Calculate bearing in degrees (0-360) from point 1 to point 2."""
+  dlon = math.radians(lon2 - lon1)
+  lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+  x = math.sin(dlon) * math.cos(lat2_r)
+  y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon)
+  return math.degrees(math.atan2(x, y)) % 360
 
-  Returns both a boolean (is_roundabout) and the distance in meters to
-  the nearest roundabout geometry point (distance_to_roundabout).
+
+def _is_ahead(car_bearing: float, bearing_to_point: float, threshold: float = 90.0) -> bool:
+  """Check if a point is roughly ahead of the car (within threshold degrees of heading)."""
+  diff = (bearing_to_point - car_bearing + 180) % 360 - 180
+  return abs(diff) < threshold
+
+
+class RoundaboutDetector:
+  """Detects roundabouts ahead using Overpass API queries in a background thread.
+
+  Uses bearing to only report roundabouts that are ahead of the car.
+  Recalculates distance every update cycle using cached node position
+  for smooth, real-time distance tracking between API queries.
   """
 
   def __init__(self):
     self._is_roundabout = False
     self._distance_to_roundabout = 0.0
+    self._nearest_lat = 0.0  # cached nearest-ahead node for real-time distance
+    self._nearest_lon = 0.0
     self._last_query_lat = 0.0
     self._last_query_lon = 0.0
     self._last_query_time = 0.0
@@ -65,30 +83,42 @@ class RoundaboutDetector:
     with self._lock:
       return self._distance_to_roundabout
 
-  def update(self, lat: float, lon: float) -> None:
-    """Called from main thread at 1Hz. Triggers background query if needed."""
+  def update(self, lat: float, lon: float, bearing: float) -> None:
+    """Called from main thread at 1Hz. Updates distance and triggers queries."""
     if lat == 0.0 and lon == 0.0:
       return
 
+    # Real-time distance update using cached nearest-ahead node
+    with self._lock:
+      if self._nearest_lat != 0.0 and bearing != 0.0:
+        bearing_to_node = _bearing_to(lat, lon, self._nearest_lat, self._nearest_lon)
+        if _is_ahead(bearing, bearing_to_node):
+          self._distance_to_roundabout = _haversine_distance(lat, lon, self._nearest_lat, self._nearest_lon)
+        else:
+          # Roundabout is now behind us - clear
+          self._is_roundabout = False
+          self._distance_to_roundabout = 0.0
+          self._nearest_lat = 0.0
+          self._nearest_lon = 0.0
+
+    # Trigger background query if enough time/distance has passed
     now = time.monotonic()
     if now - self._last_query_time < ROUNDABOUT_QUERY_INTERVAL:
       return
 
-    # Only re-query if moved significantly
     if self._last_query_lat != 0.0:
       dlat = lat - self._last_query_lat
       dlon = lon - self._last_query_lon
-      # Rough distance in meters (at mid-latitudes, 1 deg lat ~ 111km, 1 deg lon ~ 65km)
       dist = math.sqrt((dlat * 111000) ** 2 + (dlon * 65000) ** 2)
       if dist < ROUNDABOUT_POSITION_THRESHOLD:
         return
 
     self._last_query_time = now
-    thread = threading.Thread(target=self._query_overpass, args=(lat, lon), daemon=True)
+    thread = threading.Thread(target=self._query_overpass, args=(lat, lon, bearing), daemon=True)
     thread.start()
 
-  def _query_overpass(self, lat: float, lon: float) -> None:
-    """Background thread: query Overpass API for nearby roundabouts with geometry."""
+  def _query_overpass(self, lat: float, lon: float, bearing: float) -> None:
+    """Background thread: query Overpass API for nearby roundabouts ahead."""
     query = f'[out:json][timeout:3];way(around:{ROUNDABOUT_QUERY_RADIUS},{lat},{lon})[junction=roundabout];out geom;'
     try:
       data = urllib.parse.urlencode({'data': query}).encode('utf-8')
@@ -96,24 +126,35 @@ class RoundaboutDetector:
       with urllib.request.urlopen(req, timeout=3) as resp:
         result = json.loads(resp.read().decode('utf-8'))
         elements = result.get('elements', [])
-        found = len(elements) > 0
 
         min_dist = float('inf')
-        if found:
-          for element in elements:
-            for node in element.get('geometry', []):
-              d = _haversine_distance(lat, lon, node['lat'], node['lon'])
-              if d < min_dist:
-                min_dist = d
+        nearest_lat = 0.0
+        nearest_lon = 0.0
+
+        for element in elements:
+          for node in element.get('geometry', []):
+            # Only consider nodes that are ahead of the car
+            if bearing != 0.0:
+              b = _bearing_to(lat, lon, node['lat'], node['lon'])
+              if not _is_ahead(bearing, b):
+                continue
+            d = _haversine_distance(lat, lon, node['lat'], node['lon'])
+            if d < min_dist:
+              min_dist = d
+              nearest_lat = node['lat']
+              nearest_lon = node['lon']
+
+        found = min_dist < float('inf')
 
       with self._lock:
         self._is_roundabout = found
         self._distance_to_roundabout = min_dist if found else 0.0
+        self._nearest_lat = nearest_lat
+        self._nearest_lon = nearest_lon
         self._last_query_lat = lat
         self._last_query_lon = lon
 
     except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
-      # Network failure - keep previous state, don't crash
       cloudlog.debug("roundabout detector: overpass query failed")
 
 
@@ -144,8 +185,8 @@ class OsmMapData(BaseMapData):
 
     self.mem_params.put("LastGPSPosition", json.dumps(params))
 
-    # Feed position to roundabout detector
-    self._roundabout_detector.update(self.last_position.latitude, self.last_position.longitude)
+    # Feed position and bearing to roundabout detector
+    self._roundabout_detector.update(self.last_position.latitude, self.last_position.longitude, self.last_bearing or 0.0)
 
   def get_current_speed_limit(self) -> float:
     return float(self.mem_params.get("MapSpeedLimit") or 0.0)
