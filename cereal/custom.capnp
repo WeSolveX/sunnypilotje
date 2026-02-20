@@ -462,8 +462,6 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
   roadName @5 :Text;
   advisorySpeedLimitValid @6 :Bool;
   advisorySpeedLimit @7 :Float32;
-  isRoundabout @8 :Bool;
-  roundaboutDistance @9 :Float32;
 }
 
 struct ModelDataV2SP @0xa1680744031fdb2d {

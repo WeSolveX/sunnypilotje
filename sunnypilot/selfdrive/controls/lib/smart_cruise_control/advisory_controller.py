@@ -11,21 +11,17 @@ from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN
 
 AdvisoryState = custom.LongitudinalPlanSP.SmartCruiseControl.AdvisoryState
 
-ROUNDABOUT_DECEL = -1.2  # m/s² - comfortable but firm deceleration (matches SCC-Map TARGET_ACCEL)
-ROUNDABOUT_BUFFER = 50.0  # meters - arrive at target speed this far before the roundabout
-
 ACTIVE_STATES = (AdvisoryState.active, )
 ENABLED_STATES = (AdvisoryState.enabled, AdvisoryState.overriding, *ACTIVE_STATES)
 
 
 class SmartCruiseControlAdvisory:
-  """Advisory speed controller for roundabouts and curves with OSM advisory speed limits.
+  """Advisory speed controller for OSM advisory speed limits and roundabout braking.
 
-  Reads advisory speed limits from liveMapDataSP (sourced from mapd's MapAdvisorySpeedLimit param)
-  and applies them as a target speed when the advisory speed is lower than the current cruise speed.
-
-  When no advisory speed exists but the car is in a roundabout (detected via OSM junction=roundabout),
-  falls back to MIN_V_ADVISORY (30 km/h) as the target speed.
+  Reads advisory speed limits from liveMapDataSP (sourced from mapd). Mapd handles
+  both explicit OSM advisory speed tags and roundabout proximity braking via SUVAT
+  kinematics. This controller applies the advisory speed as a target when it is
+  lower than the current cruise speed.
   """
   v_target: float = 0.
   a_target: float = 0.
@@ -45,8 +41,6 @@ class SmartCruiseControlAdvisory:
     self.v_cruise = 0.
     self.advisory_speed_limit = 0.
     self.advisory_speed_limit_valid = False
-    self.is_roundabout = False
-    self.roundabout_distance = 0.
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
@@ -61,8 +55,6 @@ class SmartCruiseControlAdvisory:
 
   def update_calculations(self, sm: messaging.SubMaster) -> None:
     map_data = sm['liveMapDataSP']
-    self.is_roundabout = map_data.isRoundabout
-    self.roundabout_distance = map_data.roundaboutDistance
     self.advisory_speed_limit_valid = map_data.advisorySpeedLimitValid
     # When advisory becomes invalid, speed resets to 0 immediately. The state machine
     # transitions active -> enabled on the same frame, so output_v_target returns to
@@ -70,16 +62,6 @@ class SmartCruiseControlAdvisory:
     # picks min(targets) and V_CRUISE_UNSET is the highest possible value.
     if self.advisory_speed_limit_valid:
       self.advisory_speed_limit = map_data.advisorySpeedLimit
-    elif self.is_roundabout and self.roundabout_distance > 0:
-      # No advisory speed tag in OSM, but roundabout detected ahead.
-      # Use SUVAT kinematics to decide if we need to start braking now:
-      # brake_dist = (v_ego² - v_target²) / (2 * |decel|)
-      brake_dist = (self.v_ego ** 2 - MIN_V_ADVISORY ** 2) / (2 * abs(ROUNDABOUT_DECEL))
-      if self.roundabout_distance <= brake_dist + ROUNDABOUT_BUFFER:
-        self.advisory_speed_limit = MIN_V_ADVISORY
-        self.advisory_speed_limit_valid = True
-      else:
-        self.advisory_speed_limit = 0.
     else:
       self.advisory_speed_limit = 0.
     self.v_target = self.advisory_speed_limit

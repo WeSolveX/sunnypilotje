@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 from cereal import log
+from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
@@ -23,6 +24,11 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 ROUNDABOUT_QUERY_RADIUS = 350  # meters - large enough for braking lookahead at highway speeds
 ROUNDABOUT_QUERY_INTERVAL = 5.0  # seconds between queries
 ROUNDABOUT_POSITION_THRESHOLD = 30.0  # meters - only re-query if moved this far
+
+# Roundabout braking constants (SUVAT kinematics)
+ROUNDABOUT_DECEL = -1.2  # m/s² - comfortable but firm deceleration
+ROUNDABOUT_BUFFER = 50.0  # meters - arrive at target speed this far before the roundabout
+ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
 
 
 def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -162,10 +168,24 @@ class OsmMapData(BaseMapData):
     return next_speed_limit, next_speed_limit_distance
 
   def get_advisory_speed_limit(self) -> float:
-    return float(self.mem_params.get("MapAdvisorySpeedLimit") or 0.0)
+    # Check explicit advisory speed from OSM tags first
+    advisory = float(self.mem_params.get("MapAdvisorySpeedLimit") or 0.0)
+    if advisory > 0:
+      return advisory
 
-  def get_is_roundabout(self) -> bool:
-    return self._roundabout_detector.is_roundabout
+    # Fallback: check if approaching roundabout within braking distance
+    if self._roundabout_detector.is_roundabout:
+      dist = self._roundabout_detector.distance_to_roundabout
+      if dist > 0:
+        # Get vehicle speed from liveLocationKalman velocity
+        location = self.sm['liveLocationKalman']
+        if location.velocityCalibrated.valid:
+          v = location.velocityCalibrated.value
+          v_ego = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+          # SUVAT: brake_dist = (v_ego² - v_target²) / (2 * |decel|)
+          if v_ego > ROUNDABOUT_TARGET_SPEED:
+            brake_dist = (v_ego ** 2 - ROUNDABOUT_TARGET_SPEED ** 2) / (2 * abs(ROUNDABOUT_DECEL))
+            if dist <= brake_dist + ROUNDABOUT_BUFFER:
+              return ROUNDABOUT_TARGET_SPEED
 
-  def get_roundabout_distance(self) -> float:
-    return self._roundabout_detector.distance_to_roundabout
+    return 0.0
