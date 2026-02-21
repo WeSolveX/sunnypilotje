@@ -27,6 +27,8 @@ ROUNDABOUT_POSITION_THRESHOLD = 15.0  # meters - only re-query if moved this far
 
 ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
 ROUNDABOUT_MIN_SPEED = 20 * CV.KPH_TO_MS  # Don't send braking signals below this speed
+ROUNDABOUT_EARLY_BRAKING_SECS = 3.0  # Report roundabout this many seconds closer to compensate for
+                                      # system latency (API + GPS + brake ramp-up)
 # Virtual speed limit for roads without a mapped limit - needed because
 # SpeedLimitResolver's lookahead condition requires: 0 < next_speed < current_speed.
 # Without this, roundabout braking never activates on unmapped roads.
@@ -225,6 +227,10 @@ class OsmMapData(BaseMapData):
     if self._roundabout_enabled and self._v_ego > ROUNDABOUT_MIN_SPEED and self._roundabout_detector.is_roundabout:
       dist = self._roundabout_detector.distance_to_roundabout
       if dist > 0:
+        # Subtract speed-dependent buffer so braking starts earlier.
+        # Compensates for API latency, GPS age, and brake ramp-up time.
+        buffer = self._v_ego * ROUNDABOUT_EARLY_BRAKING_SECS
+        dist = max(1.0, dist - buffer)
         return ROUNDABOUT_TARGET_SPEED, dist
 
     # Normal next speed limit from map data
