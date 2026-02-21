@@ -60,6 +60,7 @@ class SpeedLimitRenderer(Widget):
     self.speed_limit_ahead_dist_prev = 0.0
     self.speed_limit_ahead_valid = False
     self.speed_limit_ahead_frame = 0
+    self.map_speed_limit = 0.0  # raw map speed limit (unaffected by resolver switching)
 
     self.assist_frame = 0
     self.is_cruise_set: bool = False
@@ -135,6 +136,7 @@ class SpeedLimitRenderer(Widget):
       self.speed_limit_ahead_valid = lmd.speedLimitAheadValid
       self.speed_limit_ahead = lmd.speedLimitAhead * self.speed_conv
       self.speed_limit_ahead_dist = lmd.speedLimitAheadDistance
+      self.map_speed_limit = lmd.speedLimit * self.speed_conv if lmd.speedLimitValid else 0.0
 
       if self.speed_limit_ahead_dist < self.speed_limit_ahead_dist_prev and self.speed_limit_ahead_frame < AHEAD_THRESHOLD:
         self.speed_limit_ahead_frame += 1
@@ -199,7 +201,7 @@ class SpeedLimitRenderer(Widget):
     # Check if ahead info panel is visible (same conditions as _draw_ahead_info)
     # to avoid overlapping it
     source_is_map = self.speed_limit_source == SpeedLimitSource.map
-    ahead_valid = self.speed_limit_ahead_valid and self.speed_limit_ahead > 0 and self.speed_limit_ahead != self.speed_limit
+    ahead_valid = self.speed_limit_ahead_valid and self.speed_limit_ahead > 0 and self.speed_limit_ahead != self.map_speed_limit
     ahead_visible = (ahead_valid and source_is_map
                      and self.speed_limit_assist_state != AssistState.preActive)
 
@@ -322,7 +324,7 @@ class SpeedLimitRenderer(Widget):
 
   def _draw_ahead_info(self, sign_rect):
     source_is_map = self.speed_limit_source == SpeedLimitSource.map
-    valid = self.speed_limit_ahead_valid and self.speed_limit_ahead > 0 and self.speed_limit_ahead != self.speed_limit
+    valid = self.speed_limit_ahead_valid and self.speed_limit_ahead > 0 and self.speed_limit_ahead != self.map_speed_limit
 
     if not (valid and source_is_map):
       return

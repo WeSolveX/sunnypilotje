@@ -21,9 +21,10 @@ from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-ROUNDABOUT_QUERY_RADIUS = 500  # meters - large enough for braking lookahead at highway speeds
+ROUNDABOUT_QUERY_RADIUS = 800  # meters - large enough for braking lookahead at highway speeds
 ROUNDABOUT_QUERY_INTERVAL = 3.0  # seconds between queries
 ROUNDABOUT_POSITION_THRESHOLD = 15.0  # meters - only re-query if moved this far
+ROUNDABOUT_BEHIND_THRESHOLD = 3  # consecutive "behind" checks before clearing detection
 
 ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
 ROUNDABOUT_MIN_SPEED = 20 * CV.KPH_TO_MS  # Don't send braking signals below this speed
@@ -75,6 +76,7 @@ class RoundaboutDetector:
     self._last_query_lon = 0.0
     self._last_query_time = 0.0
     self._query_running = False  # prevent thread accumulation
+    self._behind_count = 0  # hysteresis counter for bearing flicker
     self._lock = threading.Lock()
 
   @property
@@ -97,13 +99,20 @@ class RoundaboutDetector:
       if self._nearest_lat != 0.0 and bearing is not None:
         bearing_to_node = _bearing_to(lat, lon, self._nearest_lat, self._nearest_lon)
         if _is_ahead(bearing, bearing_to_node):
-          self._distance_to_roundabout = _haversine_distance(lat, lon, self._nearest_lat, self._nearest_lon)
+          self._behind_count = 0
+          new_dist = _haversine_distance(lat, lon, self._nearest_lat, self._nearest_lon)
+          # Monotonically decreasing: prevent distance jumps from Overpass re-queries
+          if self._distance_to_roundabout == 0.0 or new_dist <= self._distance_to_roundabout:
+            self._distance_to_roundabout = new_dist
         else:
-          # Roundabout is now behind us - clear
-          self._is_roundabout = False
-          self._distance_to_roundabout = 0.0
-          self._nearest_lat = 0.0
-          self._nearest_lon = 0.0
+          # Hysteresis: require multiple consecutive "behind" checks before clearing
+          # Prevents flicker on curves approaching the roundabout
+          self._behind_count += 1
+          if self._behind_count >= ROUNDABOUT_BEHIND_THRESHOLD:
+            self._is_roundabout = False
+            self._distance_to_roundabout = 0.0
+            self._nearest_lat = 0.0
+            self._nearest_lon = 0.0
 
     # Trigger background query if enough time/distance has passed
     now = time.monotonic()
