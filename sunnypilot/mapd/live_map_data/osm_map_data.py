@@ -27,8 +27,7 @@ ROUNDABOUT_POSITION_THRESHOLD = 15.0  # meters - only re-query if moved this far
 
 ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
 ROUNDABOUT_MIN_SPEED = 20 * CV.KPH_TO_MS  # Don't send braking signals below this speed
-ROUNDABOUT_EARLY_BRAKING_SECS = 3.0  # Report roundabout this many seconds closer to compensate for
-                                      # system latency (API + GPS + brake ramp-up)
+ROUNDABOUT_EARLY_BRAKING_SECS = 10.0  # Report roundabout this many seconds closer for comfortable braking
 # Virtual speed limit for roads without a mapped limit - needed because
 # SpeedLimitResolver's lookahead condition requires: 0 < next_speed < current_speed.
 # Without this, roundabout braking never activates on unmapped roads.
