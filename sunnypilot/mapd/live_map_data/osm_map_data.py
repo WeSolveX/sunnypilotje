@@ -25,10 +25,8 @@ ROUNDABOUT_QUERY_RADIUS = 500  # meters - large enough for braking lookahead at 
 ROUNDABOUT_QUERY_INTERVAL = 3.0  # seconds between queries
 ROUNDABOUT_POSITION_THRESHOLD = 15.0  # meters - only re-query if moved this far
 
-# Roundabout braking constants (SUVAT kinematics)
-ROUNDABOUT_DECEL = -1.2  # m/s² - comfortable but firm deceleration
-ROUNDABOUT_BUFFER = 50.0  # meters - arrive at target speed this far before the roundabout
 ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
+ROUNDABOUT_MIN_SPEED = 20 * CV.KPH_TO_MS  # Don't send braking signals below this speed
 # Virtual speed limit for roads without a mapped limit - needed because
 # SpeedLimitResolver's lookahead condition requires: 0 < next_speed < current_speed.
 # Without this, roundabout braking never activates on unmapped roads.
@@ -75,6 +73,7 @@ class RoundaboutDetector:
     self._last_query_lat = 0.0
     self._last_query_lon = 0.0
     self._last_query_time = 0.0
+    self._query_running = False  # prevent thread accumulation
     self._lock = threading.Lock()
 
   @property
@@ -87,14 +86,14 @@ class RoundaboutDetector:
     with self._lock:
       return self._distance_to_roundabout
 
-  def update(self, lat: float, lon: float, bearing: float) -> None:
+  def update(self, lat: float, lon: float, bearing: float | None) -> None:
     """Called from main thread at 1Hz. Updates distance and triggers queries."""
     if lat == 0.0 and lon == 0.0:
       return
 
     # Real-time distance update using cached nearest-ahead node
     with self._lock:
-      if self._nearest_lat != 0.0 and bearing != 0.0:
+      if self._nearest_lat != 0.0 and bearing is not None:
         bearing_to_node = _bearing_to(lat, lon, self._nearest_lat, self._nearest_lon)
         if _is_ahead(bearing, bearing_to_node):
           self._distance_to_roundabout = _haversine_distance(lat, lon, self._nearest_lat, self._nearest_lon)
@@ -117,11 +116,15 @@ class RoundaboutDetector:
       if dist < ROUNDABOUT_POSITION_THRESHOLD:
         return
 
+    if self._query_running:
+      return
+
     self._last_query_time = now
+    self._query_running = True
     thread = threading.Thread(target=self._query_overpass, args=(lat, lon, bearing), daemon=True)
     thread.start()
 
-  def _query_overpass(self, lat: float, lon: float, bearing: float) -> None:
+  def _query_overpass(self, lat: float, lon: float, bearing: float | None) -> None:
     """Background thread: query Overpass API for nearby roundabouts ahead."""
     query = f'[out:json][timeout:3];way(around:{ROUNDABOUT_QUERY_RADIUS},{lat},{lon})[junction=roundabout];out geom;'
     try:
@@ -138,7 +141,7 @@ class RoundaboutDetector:
         for element in elements:
           for node in element.get('geometry', []):
             # Only consider nodes that are ahead of the car
-            if bearing != 0.0:
+            if bearing is not None:
               b = _bearing_to(lat, lon, node['lat'], node['lon'])
               if not _is_ahead(bearing, b):
                 continue
@@ -160,6 +163,8 @@ class RoundaboutDetector:
 
     except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
       cloudlog.debug("roundabout detector: overpass query failed")
+    finally:
+      self._query_running = False
 
 
 class OsmMapData(BaseMapData):
@@ -168,6 +173,7 @@ class OsmMapData(BaseMapData):
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self._roundabout_detector = RoundaboutDetector()
     self._roundabout_enabled = self.params.get_bool("SmartCruiseControlMap")
+    self._v_ego = 0.0  # car speed from localizer, for minimum speed guard
 
   def update_location(self) -> None:
     location = self.sm['liveLocationKalman']
@@ -176,6 +182,8 @@ class OsmMapData(BaseMapData):
     if self.localizer_valid:
       self.last_bearing = math.degrees(location.calibratedOrientationNED.value[2])
       self.last_position = Coordinate(location.positionGeodetic.value[0], location.positionGeodetic.value[1])
+      vel = location.velocityCalibrated.value
+      self._v_ego = math.sqrt(vel[0] ** 2 + vel[1] ** 2)
 
     if self.last_position is None:
       return
@@ -195,14 +203,14 @@ class OsmMapData(BaseMapData):
 
     # Feed position and bearing to roundabout detector (only when enabled)
     if self._roundabout_enabled:
-      self._roundabout_detector.update(self.last_position.latitude, self.last_position.longitude, self.last_bearing or 0.0)
+      self._roundabout_detector.update(self.last_position.latitude, self.last_position.longitude, self.last_bearing)
 
   def get_current_speed_limit(self) -> float:
     speed_limit = float(self.mem_params.get("MapSpeedLimit") or 0.0)
     # When approaching a roundabout with no mapped speed limit, set a virtual limit.
     # SpeedLimitResolver requires: 0 < next_speed_limit < speed_limit
     # Without this, the condition fails when speed_limit=0 and braking never activates.
-    if speed_limit == 0.0 and self._roundabout_enabled and self._roundabout_detector.is_roundabout:
+    if speed_limit == 0.0 and self._roundabout_enabled and self._v_ego > ROUNDABOUT_MIN_SPEED and self._roundabout_detector.is_roundabout:
       if self._roundabout_detector.distance_to_roundabout > 0:
         speed_limit = ROUNDABOUT_FALLBACK_SPEED_LIMIT
     return speed_limit
@@ -214,7 +222,7 @@ class OsmMapData(BaseMapData):
     # Roundabout advisory: report approaching roundabout as "speed limit ahead"
     # This feeds into SpeedLimitResolver's existing lookahead braking logic
     # Gated behind SmartCruiseControlMap toggle (existing param, no rebuild needed)
-    if self._roundabout_enabled and self._roundabout_detector.is_roundabout:
+    if self._roundabout_enabled and self._v_ego > ROUNDABOUT_MIN_SPEED and self._roundabout_detector.is_roundabout:
       dist = self._roundabout_detector.distance_to_roundabout
       if dist > 0:
         return ROUNDABOUT_TARGET_SPEED, dist
