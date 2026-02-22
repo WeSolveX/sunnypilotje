@@ -14,7 +14,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC, \
-  SPEED_INCREASE_LOOKAHEAD_TIME, MAX_SPEED_INCREASE_LOOKAHEAD, SUDDEN_LIMIT_DEBOUNCE_TIME
+  SPEED_INCREASE_LOOKAHEAD_TIME, MAX_SPEED_INCREASE_LOOKAHEAD, SUDDEN_LIMIT_DEBOUNCE_TIME, ICBM_RESPONSE_BUFFER
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -200,6 +200,8 @@ class SpeedLimitResolver:
     if 0. < next_speed_limit < speed_limit:
       adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
       adapt_distance = self.v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
+      # ICBM buffer: account for button-press latency (1 km/h per press) + vehicle response
+      adapt_distance += self.v_ego * ICBM_RESPONSE_BUFFER
 
       if distance_to_speed_limit_ahead <= adapt_distance:
         self.limit_solutions[SpeedLimitSource.map] = next_speed_limit

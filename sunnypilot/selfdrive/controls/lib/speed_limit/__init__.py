@@ -22,3 +22,5 @@ SPEED_INCREASE_LOOKAHEAD_TIME = 5.0  # seconds before zone to start speed increa
 MAX_SPEED_INCREASE_LOOKAHEAD = 250.  # meters, cap for sensor glitch safety
 
 SUDDEN_LIMIT_DEBOUNCE_TIME = 3.0  # seconds to hold a sudden (not seen ahead) speed limit before accepting it
+
+ICBM_RESPONSE_BUFFER = 4.0  # seconds — extra braking lookahead for ICBM button-press latency + vehicle response

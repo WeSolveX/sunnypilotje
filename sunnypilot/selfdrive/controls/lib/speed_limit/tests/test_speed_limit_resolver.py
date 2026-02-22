@@ -11,7 +11,8 @@ import pytest
 from pytest_mock import MockerFixture
 
 from cereal import custom
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, SUDDEN_LIMIT_DEBOUNCE_TIME
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, SUDDEN_LIMIT_DEBOUNCE_TIME, \
+  LIMIT_ADAPT_ACC, ICBM_RESPONSE_BUFFER
 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy
@@ -46,7 +47,7 @@ def setup_sm_mock(mocker: MockerFixture):
     'speedLimitAheadDistance': 0.,
   }, mocker)
   gps_data = create_mock({
-    'unixTimestampMillis': time.monotonic() * 1e3,
+    'unixTimestampMillis': time.time() * 1e3,
   }, mocker)
   sm_mock = mocker.MagicMock()
   sm_mock.__getitem__.side_effect = lambda key: {
@@ -403,3 +404,125 @@ class TestSuddenSpeedLimitDebounce:
     resolver._calculate_map_data_limits(sm, self.LIMIT_LOW, self.LIMIT_HIGH)
     assert resolver.limit_solutions[SpeedLimitSource.map] == self.LIMIT_HIGH
     assert resolver.distance_solutions[SpeedLimitSource.map] == 100.
+
+
+class TestICBMResponseBuffer:
+  """Tests for the ICBM response buffer in the braking lookahead calculation.
+
+  ICBM adjusts cruise speed via simulated button presses (1 km/h per press).
+  Large speed differences (e.g. 80->50) require many presses and take seconds.
+  The buffer extends the braking lookahead to compensate for this latency.
+  """
+
+  LIMIT_HIGH = 30.56   # ~110 km/h in m/s
+  LIMIT_LOW = 13.89    # ~50 km/h in m/s
+  LIMIT_MID = 22.22    # ~80 km/h in m/s
+
+  def _make_resolver(self, accepted_limit: float, v_ego: float) -> SpeedLimitResolver:
+    resolver = SpeedLimitResolver()
+    resolver.policy = Policy.map_data_only
+    resolver.v_ego = v_ego
+    resolver._accepted_map_limit = accepted_limit
+    return resolver
+
+  def _calc_adapt_distance(self, v_ego: float, next_speed_limit: float) -> float:
+    """Calculate adapt_distance with ICBM buffer (same formula as resolver)."""
+    adapt_time = (next_speed_limit - v_ego) / LIMIT_ADAPT_ACC
+    adapt_distance = v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
+    adapt_distance += v_ego * ICBM_RESPONSE_BUFFER
+    return adapt_distance
+
+  def _calc_adapt_distance_without_buffer(self, v_ego: float, next_speed_limit: float) -> float:
+    """Calculate adapt_distance WITHOUT ICBM buffer (old formula)."""
+    adapt_time = (next_speed_limit - v_ego) / LIMIT_ADAPT_ACC
+    return v_ego * adapt_time + 0.5 * LIMIT_ADAPT_ACC * adapt_time ** 2
+
+  def test_buffer_extends_braking_distance_80_to_50(self, mocker: MockerFixture):
+    """80->50 km/h: buffer adds ~89m (v_ego * 4s), total ~239m vs ~150m without."""
+    v_ego = self.LIMIT_MID  # 22.22 m/s = 80 km/h
+
+    dist_with = self._calc_adapt_distance(v_ego, self.LIMIT_LOW)
+    dist_without = self._calc_adapt_distance_without_buffer(v_ego, self.LIMIT_LOW)
+    buffer_m = v_ego * ICBM_RESPONSE_BUFFER
+
+    assert dist_with > dist_without
+    assert abs((dist_with - dist_without) - buffer_m) < 0.1
+
+  def test_buffer_extends_braking_distance_110_to_50(self, mocker: MockerFixture):
+    """110->50 km/h: buffer adds ~122m (v_ego * 4s), total ~493m vs ~370m without."""
+    v_ego = self.LIMIT_HIGH  # 30.56 m/s = 110 km/h
+
+    dist_with = self._calc_adapt_distance(v_ego, self.LIMIT_LOW)
+    dist_without = self._calc_adapt_distance_without_buffer(v_ego, self.LIMIT_LOW)
+    buffer_m = v_ego * ICBM_RESPONSE_BUFFER
+
+    assert dist_with > dist_without
+    assert abs((dist_with - dist_without) - buffer_m) < 0.1
+
+  def test_braking_starts_earlier_with_buffer(self, mocker: MockerFixture):
+    """At a distance that's between old and new adapt_distance, braking now triggers."""
+    v_ego = self.LIMIT_MID  # 80 km/h
+    resolver = self._make_resolver(self.LIMIT_HIGH, v_ego)
+
+    mock_monotonic = mocker.patch('time.monotonic')
+    mocker.patch('time.time', return_value=1000.0)
+    mock_monotonic.return_value = 1000.0
+
+    # Distance between old adapt_distance (~150m) and new adapt_distance (~239m)
+    test_distance = 200.0
+    sm = make_debounce_sm(mocker, current_time=1000.0, ahead_distance=test_distance)
+
+    # Without buffer, 200m > 150m -> braking would NOT trigger (stays at 110)
+    # With buffer, 200m < 239m -> braking DOES trigger (switches to 50)
+    resolver._calculate_map_data_limits(sm, self.LIMIT_HIGH, self.LIMIT_LOW)
+    assert resolver.limit_solutions[SpeedLimitSource.map] == self.LIMIT_LOW
+    assert resolver.distance_solutions[SpeedLimitSource.map] == test_distance
+
+  def test_braking_not_triggered_beyond_buffered_distance(self, mocker: MockerFixture):
+    """Beyond the buffered adapt_distance, braking should not trigger yet."""
+    v_ego = self.LIMIT_MID  # 80 km/h
+    resolver = self._make_resolver(self.LIMIT_HIGH, v_ego)
+
+    mock_monotonic = mocker.patch('time.monotonic')
+    mocker.patch('time.time', return_value=1000.0)
+    mock_monotonic.return_value = 1000.0
+
+    # Distance well beyond buffered adapt_distance (~239m)
+    test_distance = 500.0
+    sm = make_debounce_sm(mocker, current_time=1000.0, ahead_distance=test_distance)
+
+    resolver._calculate_map_data_limits(sm, self.LIMIT_HIGH, self.LIMIT_LOW)
+    # Should stay at current limit since we're too far away
+    assert resolver.limit_solutions[SpeedLimitSource.map] == self.LIMIT_HIGH
+
+  def test_buffer_scales_with_speed(self, mocker: MockerFixture):
+    """Higher speed -> larger buffer distance (more ground covered during ICBM delay)."""
+    dist_at_80 = self._calc_adapt_distance(self.LIMIT_MID, self.LIMIT_LOW)
+    dist_at_110 = self._calc_adapt_distance(self.LIMIT_HIGH, self.LIMIT_LOW)
+
+    # 110 km/h should have a significantly larger adapt_distance than 80 km/h
+    assert dist_at_110 > dist_at_80 * 1.5
+
+  def test_buffer_does_not_affect_speed_increase_lookahead(self, mocker: MockerFixture):
+    """Speed increase lookahead (50->110) should be unaffected by braking buffer."""
+    v_ego = self.LIMIT_MID  # 80 km/h
+    resolver = self._make_resolver(self.LIMIT_LOW, v_ego)
+
+    mock_monotonic = mocker.patch('time.monotonic')
+    mocker.patch('time.time', return_value=1000.0)
+    mock_monotonic.return_value = 1000.0
+
+    # Speed increase: current=50, ahead=110, distance=100m
+    # Lookahead = min(max(50, 22.22*5), 250) = 111m -> 100 <= 111 -> triggers
+    sm = make_debounce_sm(mocker, current_time=1000.0, ahead_distance=100.)
+    resolver._calculate_map_data_limits(sm, self.LIMIT_LOW, self.LIMIT_HIGH)
+    assert resolver.limit_solutions[SpeedLimitSource.map] == self.LIMIT_HIGH
+
+    # Speed increase at distance=200m -> 200 > 111 -> does NOT trigger
+    sm2 = make_debounce_sm(mocker, current_time=1000.0, ahead_distance=200.)
+    resolver._calculate_map_data_limits(sm2, self.LIMIT_LOW, self.LIMIT_HIGH)
+    assert resolver.limit_solutions[SpeedLimitSource.map] == self.LIMIT_LOW
+
+  def test_icbm_buffer_constant_value(self):
+    """Verify the ICBM buffer constant is set correctly."""
+    assert ICBM_RESPONSE_BUFFER == 4.0
