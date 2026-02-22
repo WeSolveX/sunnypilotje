@@ -28,7 +28,8 @@ ROUNDABOUT_BEHIND_THRESHOLD = 3  # consecutive "behind" checks before clearing d
 
 ROUNDABOUT_TARGET_SPEED = 30 * CV.KPH_TO_MS  # 30 km/h target for roundabouts
 ROUNDABOUT_MIN_SPEED = 20 * CV.KPH_TO_MS  # Don't send braking signals below this speed
-ROUNDABOUT_EARLY_BRAKING_SECS = 10.0  # Report roundabout this many seconds closer for comfortable braking
+ROUNDABOUT_EARLY_BRAKING_SECS = 7.0  # Report roundabout this many seconds closer for comfortable braking
+MAX_LATERAL_OFFSET = 60.0  # meters — reject roundabouts whose centroid is more than 60m off the car's trajectory
 # Virtual speed limit for roads without a mapped limit - needed because
 # SpeedLimitResolver's lookahead condition requires: 0 < next_speed < current_speed.
 # Without this, roundabout braking never activates on unmapped roads.
@@ -76,6 +77,8 @@ class RoundaboutDetector:
     self._last_query_lon = 0.0
     self._last_query_time = 0.0
     self._query_running = False  # prevent thread accumulation
+    self._center_lat = 0.0  # cached centroid for lateral checks in update()
+    self._center_lon = 0.0
     self._behind_count = 0  # hysteresis counter for bearing flicker
     self._lock = threading.Lock()
 
@@ -99,11 +102,32 @@ class RoundaboutDetector:
       if self._nearest_lat != 0.0 and bearing is not None:
         bearing_to_node = _bearing_to(lat, lon, self._nearest_lat, self._nearest_lon)
         if _is_ahead(bearing, bearing_to_node):
-          self._behind_count = 0
-          new_dist = _haversine_distance(lat, lon, self._nearest_lat, self._nearest_lon)
-          # Monotonically decreasing: prevent distance jumps from Overpass re-queries
-          if self._distance_to_roundabout == 0.0 or new_dist <= self._distance_to_roundabout:
-            self._distance_to_roundabout = new_dist
+          # Lateral check using cached centroid (not nearest node)
+          lateral_ok = True
+          if self._center_lat != 0.0:
+            b_center = _bearing_to(lat, lon, self._center_lat, self._center_lon)
+            bearing_diff_rad = math.radians(abs((b_center - bearing + 180) % 360 - 180))
+            center_dist = _haversine_distance(lat, lon, self._center_lat, self._center_lon)
+            lateral_offset = center_dist * abs(math.sin(bearing_diff_rad))
+            if lateral_offset > MAX_LATERAL_OFFSET:
+              lateral_ok = False
+
+          if lateral_ok:
+            self._behind_count = 0
+            new_dist = _haversine_distance(lat, lon, self._nearest_lat, self._nearest_lon)
+            # Monotonically decreasing: prevent distance jumps from Overpass re-queries
+            if self._distance_to_roundabout == 0.0 or new_dist <= self._distance_to_roundabout:
+              self._distance_to_roundabout = new_dist
+          else:
+            # Roundabout centroid drifted off-trajectory — treat as "behind"
+            self._behind_count += 1
+            if self._behind_count >= ROUNDABOUT_BEHIND_THRESHOLD:
+              self._is_roundabout = False
+              self._distance_to_roundabout = 0.0
+              self._nearest_lat = 0.0
+              self._nearest_lon = 0.0
+              self._center_lat = 0.0
+              self._center_lon = 0.0
         else:
           # Hysteresis: require multiple consecutive "behind" checks before clearing
           # Prevents flicker on curves approaching the roundabout
@@ -113,6 +137,8 @@ class RoundaboutDetector:
             self._distance_to_roundabout = 0.0
             self._nearest_lat = 0.0
             self._nearest_lon = 0.0
+            self._center_lat = 0.0
+            self._center_lon = 0.0
 
     # Trigger background query if enough time/distance has passed
     now = time.monotonic()
@@ -147,19 +173,39 @@ class RoundaboutDetector:
         min_dist = float('inf')
         nearest_lat = 0.0
         nearest_lon = 0.0
+        best_center_lat = 0.0
+        best_center_lon = 0.0
 
         for element in elements:
-          for node in element.get('geometry', []):
-            # Only consider nodes that are ahead of the car
-            if bearing is not None:
-              b = _bearing_to(lat, lon, node['lat'], node['lon'])
-              if not _is_ahead(bearing, b):
-                continue
-            d = _haversine_distance(lat, lon, node['lat'], node['lon'])
-            if d < min_dist:
-              min_dist = d
+          nodes = element.get('geometry', [])
+          if not nodes:
+            continue
+
+          # Compute centroid of this roundabout way
+          center_lat = sum(n['lat'] for n in nodes) / len(nodes)
+          center_lon = sum(n['lon'] for n in nodes) / len(nodes)
+
+          if bearing is not None:
+            # Bearing check on centroid
+            b = _bearing_to(lat, lon, center_lat, center_lon)
+            if not _is_ahead(bearing, b):
+              continue
+            # Lateral offset check on centroid — reject roundabouts on parallel roads
+            bearing_diff_rad = math.radians(abs((b - bearing + 180) % 360 - 180))
+            centroid_dist = _haversine_distance(lat, lon, center_lat, center_lon)
+            lateral_offset = centroid_dist * abs(math.sin(bearing_diff_rad))
+            if lateral_offset > MAX_LATERAL_OFFSET:
+              continue
+
+          # This roundabout passed centroid checks — find nearest node for distance tracking
+          for node in nodes:
+            nd = _haversine_distance(lat, lon, node['lat'], node['lon'])
+            if nd < min_dist:
+              min_dist = nd
               nearest_lat = node['lat']
               nearest_lon = node['lon']
+              best_center_lat = center_lat
+              best_center_lon = center_lon
 
         found = min_dist < float('inf')
 
@@ -168,6 +214,8 @@ class RoundaboutDetector:
         self._distance_to_roundabout = min_dist if found else 0.0
         self._nearest_lat = nearest_lat
         self._nearest_lon = nearest_lon
+        self._center_lat = best_center_lat if found else 0.0
+        self._center_lon = best_center_lon if found else 0.0
         self._last_query_lat = lat
         self._last_query_lon = lon
 
