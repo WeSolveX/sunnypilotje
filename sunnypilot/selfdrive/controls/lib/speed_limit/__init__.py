@@ -18,5 +18,6 @@ CONFIRM_SPEED_THRESHOLD = {
   False: 20,  # mph
 }
 
-SPEED_INCREASE_LOOKAHEAD_TIME = 5.0  # seconds before zone to start speed increase
+SPEED_INCREASE_LOOKAHEAD_TIME = 2.0  # seconds before zone to start speed increase
 MAX_SPEED_INCREASE_LOOKAHEAD = 250.  # meters, cap for sensor glitch safety
+SPEED_INCREASE_HOLDOFF_TIME = 5.0  # seconds to hold current limit after a drop before allowing speed increase lookahead
